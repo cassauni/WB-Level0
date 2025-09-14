@@ -1,0 +1,101 @@
+<!-- web/index.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <title>Order Lookup</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        :root { --bg:#0f172a; --card:#111827; --muted:#94a3b8; --ok:#16a34a; --err:#ef4444; }
+        * { box-sizing: border-box; }
+        body { margin:0; font-family: ui-sans-serif, system-ui, Arial; background:linear-gradient(180deg,#0b1022,#0f172a); color:#e5e7eb; }
+        .wrap { max-width:880px; margin:40px auto; padding:0 20px; }
+        h1 { font-size:28px; margin:0 0 18px; }
+        .card { background:rgba(17,24,39,.85); border:1px solid rgba(255,255,255,.06); border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25); backdrop-filter: blur(6px); }
+        .row { display:flex; gap:8px; flex-wrap:wrap; }
+        input[type=text] { flex:1 1 420px; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.08); background:#0b1220; color:#e5e7eb; outline:none; }
+        input[type=text]::placeholder { color:#64748b; }
+        button { padding:12px 16px; border:0; border-radius:10px; background:#2563eb; color:white; cursor:pointer; }
+        button:disabled { opacity:.6; cursor:not-allowed; }
+        .status { margin-top:12px; font-size:14px; }
+        .ok { color: var(--ok) }
+        .err { color: var(--err) }
+        .timer { margin-top:6px; font-size:13px; color:var(--muted); }
+        pre { margin:14px 0 0; max-height:480px; overflow:auto; background:#0b1220; border-radius:12px; padding:14px; border:1px solid rgba(255,255,255,.06); }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <h1>Order Lookup</h1>
+    <div class="card">
+        <div class="row">
+            <input id="orderId" type="text" placeholder="Вставь order_uid (UUID)" />
+            <button id="btn">Найти</button>
+        </div>
+
+        <div class="status" id="status"></div>
+        <div class="timer" id="timer"></div>
+        <pre id="result" hidden></pre>
+    </div>
+</div>
+
+<script>
+    const $id = document.getElementById('orderId');
+    const $btn = document.getElementById('btn');
+    const $res = document.getElementById('result');
+    const $status = document.getElementById('status');
+    const $timer = document.getElementById('timer');
+
+    function setLoading(v) { $btn.disabled = v; $btn.textContent = v ? 'Загрузка…' : 'Найти'; }
+    function show(text, ok) {
+        $status.className = 'status ' + (ok ? 'ok' : 'err');
+        $status.textContent = text;
+    }
+    function showTimer(ms, statusText) {
+        const m = Math.round(ms);
+        $timer.textContent = `Время ответа: ${m} мс${statusText ? ' • ' + statusText : ''}`;
+    }
+
+    async function findOrder() {
+        const uid = ($id.value || '').trim();
+        if (!uid) { show('Укажи UUID заказа', false); $res.hidden = true; $timer.textContent=''; return; }
+
+        setLoading(true);
+        show('Запрашиваем…', true);
+        $res.hidden = true; $res.textContent = '';
+        $timer.textContent = '';
+
+        const t0 = performance.now();
+        try {
+            const resp = await fetch(`/order/${encodeURIComponent(uid)}`, { cache: 'no-store' });
+            const ct = resp.headers.get('content-type') || '';
+            let dataText = '';
+
+            if (!resp.ok) {
+                dataText = ct.includes('application/json')
+                    ? JSON.stringify(await resp.json(), null, 2)
+                    : await resp.text();
+                show(`Ошибка ${resp.status}: ${resp.statusText}`, false);
+            } else {
+                const data = ct.includes('application/json') ? await resp.json() : await resp.text();
+                dataText = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+                show('OK', true);
+            }
+
+            $res.hidden = false;
+            $res.textContent = dataText || '(пусто)';
+            showTimer(performance.now() - t0, `HTTP ${resp.status}`);
+        } catch (e) {
+            show('Сетевая ошибка: ' + e.message, false);
+            showTimer(performance.now() - t0);
+            $res.hidden = true;
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    $btn.addEventListener('click', findOrder);
+    $id.addEventListener('keydown', (e) => { if (e.key === 'Enter') findOrder(); });
+</script>
+</body>
+</html>
