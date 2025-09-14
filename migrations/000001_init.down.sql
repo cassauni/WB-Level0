@@ -1,7 +1,6 @@
 DROP INDEX IF EXISTS idx_items_rid;
 DROP INDEX IF EXISTS idx_orders_track;
 
-
 DROP TABLE IF EXISTS items;
 DROP TABLE IF EXISTS payments;
 DROP TABLE IF EXISTS deliveries;
