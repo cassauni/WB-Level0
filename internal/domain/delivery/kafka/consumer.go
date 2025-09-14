@@ -3,6 +3,9 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"time"
 
 	"order-service/config"
@@ -25,34 +28,46 @@ func NewConsumer(cfg *config.ConfigModel, uc *usecase.OrderUC, l *zap.Logger) (*
 
 func (c *Consumer) OnStart() error {
 	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        c.cfg.Kafka.Brokers,
-		GroupID:        c.cfg.Kafka.GroupID,
-		Topic:          c.cfg.Kafka.Topic,
-		StartOffset:    kafka.LastOffset,
-		CommitInterval: 0,
-		MinBytes:       1_000,
-		MaxBytes:       1_000_000,
-		MaxWait:        500 * time.Millisecond,
+		Brokers:               c.cfg.Kafka.Brokers,
+		GroupID:               c.cfg.Kafka.GroupID,
+		Topic:                 c.cfg.Kafka.Topic,
+		StartOffset:           kafka.LastOffset,
+		CommitInterval:        0,
+		MinBytes:              1_000,
+		MaxBytes:              1_000_000,
+		MaxWait:               500 * time.Millisecond,
+		WatchPartitionChanges: true,
+		ReadBackoffMin:        500 * time.Millisecond,
+		ReadBackoffMax:        5 * time.Second,
 	})
+
+	_ = waitTopicReady(context.Background(), c.cfg.Kafka.Brokers, c.cfg.Kafka.Topic, 30*time.Second, c.log)
 
 	go func() {
 		defer r.Close()
-		c.log.Infow("listening",
-			"brokers", c.cfg.Kafka.Brokers,
-			"topic", c.cfg.Kafka.Topic,
-			"group", c.cfg.Kafka.GroupID,
-		)
+		c.log.Infow("listening", "brokers", c.cfg.Kafka.Brokers, "topic", c.cfg.Kafka.Topic, "group", c.cfg.Kafka.GroupID)
+
 		ctx := context.Background()
+		backoff := 500 * time.Millisecond
 
 		for {
 			msg, err := r.ReadMessage(ctx)
 			if err != nil {
-				if ctx.Err() != nil {
+				if errors.Is(err, context.Canceled) ||
+					errors.Is(err, context.DeadlineExceeded) ||
+					errors.Is(err, io.EOF) ||
+					errors.Is(err, net.ErrClosed) {
 					return
 				}
-				c.log.Errorw("read error", "error", err)
-				return
+				c.log.Warnw("read error, will retry", "error", err)
+				time.Sleep(backoff)
+				if backoff < 5*time.Second {
+					backoff *= 2
+				}
+				continue
 			}
+			backoff = 500 * time.Millisecond
+
 			var ord entities.Order
 			if err := json.Unmarshal(msg.Value, &ord); err != nil {
 				c.log.Warnw("bad json, skip", "partition", msg.Partition, "offset", msg.Offset, "error", err)
@@ -60,12 +75,7 @@ func (c *Consumer) OnStart() error {
 				continue
 			}
 
-			c.log.Infow("received",
-				"order_uid", ord.OrderId.String(),
-				"key", string(msg.Key),
-				"partition", msg.Partition,
-				"offset", msg.Offset,
-			)
+			c.log.Infow("received", "order_uid", ord.OrderId.String(), "key", string(msg.Key), "partition", msg.Partition, "offset", msg.Offset)
 
 			if err := c.uc.Set(ctx, &ord); err != nil {
 				c.log.Errorw("save failed", "order_uid", ord.OrderId.String(), "error", err)
